@@ -1,0 +1,233 @@
+import flet as ft
+import requests
+from bs4 import BeautifulSoup
+from html import escape
+
+C = getattr(ft, "Colors", None) or ft.colors
+
+DEFAULT_WP_URL = "https://yourwebsite.com/wp-json/wp/v2/posts"
+DEFAULT_WP_USER = "your_username"
+DEFAULT_WP_APP_PASS = "your_application_password"
+
+
+def main(page: ft.Page):
+    page.title = "Asha App - WP Auto Publisher"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.scroll = "adaptive"
+    page.padding = 20
+
+    def load(key, default):
+        try:
+            v = page.client_storage.get(key)
+            return v if v else default
+        except Exception:
+            return default
+
+    def save(key, value):
+        try:
+            page.client_storage.set(key, value)
+        except Exception:
+            pass
+
+    wp_url = ft.TextField(label="WordPress API URL", value=load("wp_url", DEFAULT_WP_URL))
+    wp_user = ft.TextField(label="WP Username", value=load("wp_user", DEFAULT_WP_USER))
+    wp_pass = ft.TextField(
+        label="Application Password", value=load("wp_pass", DEFAULT_WP_APP_PASS),
+        password=True, can_reveal_password=True,
+    )
+    acf_name_source = ft.TextField(label="ACF field name (Source URL)", value=load("acf_source", "source_url"))
+    acf_name_extra = ft.TextField(label="ACF field name (Meta Info)", value=load("acf_extra", "meta_info"))
+
+    def save_settings(e):
+        save("wp_url", wp_url.value.strip())
+        save("wp_user", wp_user.value.strip())
+        save("wp_pass", wp_pass.value.strip())
+        save("acf_source", acf_name_source.value.strip())
+        save("acf_extra", acf_name_extra.value.strip())
+        set_status("✅ Settings save ho gayi", C.GREEN_400)
+
+    settings_panel = ft.ExpansionTile(
+        title=ft.Text("⚙️ WordPress Settings"),
+        controls=[
+            ft.Container(
+                padding=10,
+                content=ft.Column([
+                    wp_url, wp_user, wp_pass, acf_name_source, acf_name_extra,
+                    ft.ElevatedButton("💾 Save Settings", on_click=save_settings),
+                ]),
+            )
+        ],
+    )
+
+    url_input = ft.TextField(
+        label="Target Website Link",
+        hint_text="https://example.com/article",
+        border_color=C.BLUE_400,
+    )
+    max_paras = ft.TextField(label="Max paragraphs", value="5", width=140,
+                             keyboard_type=ft.KeyboardType.NUMBER)
+    status_dd = ft.Dropdown(
+        label="Post Status", width=170, value="draft",
+        options=[ft.dropdown.Option("draft"), ft.dropdown.Option("publish")],
+    )
+
+    status_text = ft.Text("", weight=ft.FontWeight.BOLD)
+
+    box_title = ft.TextField(label="📦 Box 1: Post Title", border_color=C.GREEN_400)
+    box_content = ft.TextField(
+        label="📦 Box 2: Main Content (Body)", multiline=True,
+        min_lines=4, max_lines=8, border_color=C.GREEN_400,
+    )
+    box_acf_source = ft.TextField(label="📦 Box 3: ACF Field (Source URL)", border_color=C.AMBER_400)
+    box_acf_extra = ft.TextField(label="📦 Box 4: ACF Field (Meta Info)", border_color=C.AMBER_400)
+
+    unmapped_box = ft.Container(
+        content=ft.Column([
+            ft.Text("⚠️ Unmapped / Extra Data Check", weight=ft.FontWeight.BOLD, color=C.ORANGE_400),
+            ft.Text("Abhi tak koi data read nahi hua hai.", color=C.GREY_400),
+        ]),
+        padding=15,
+        bgcolor=getattr(C, "SURFACE_CONTAINER_HIGHEST", None) or C.GREY_900,
+        border_radius=8,
+    )
+
+    def set_status(msg, color):
+        status_text.value = msg
+        status_text.color = color
+        page.update()
+
+    def fetch_data(e):
+        target_url = url_input.value.strip()
+        if not target_url.startswith(("http://", "https://")):
+            set_status("❌ Kripya valid URL dalein (http/https ke saath)!", C.RED_400)
+            return
+
+        try:
+            n = max(1, int(max_paras.value or 5))
+        except ValueError:
+            n = 5
+
+        try:
+            set_status("⏳ Link read kiya ja raha hai...", C.BLUE_400)
+            headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"}
+            response = requests.get(target_url, headers=headers, timeout=15)
+
+            if response.status_code != 200:
+                set_status(f"❌ URL open nahi hua (Status Code: {response.status_code})", C.RED_400)
+                return
+
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            title = soup.title.string.strip() if soup.title and soup.title.string else "Untitled Post"
+            paragraphs = [p.get_text().strip() for p in soup.find_all("p") if p.get_text().strip()]
+            content = "\n\n".join(paragraphs[:n]) if paragraphs else "No content found."
+
+            box_title.value = title
+            box_content.value = content
+            box_acf_source.value = target_url
+            box_acf_extra.value = f"Scraped from: {target_url} | Paragraphs: {len(paragraphs)}"
+
+            headings = [h.get_text().strip() for h in soup.find_all(["h1", "h2", "h3"]) if h.get_text().strip()]
+            images = [i.get("src") for i in soup.find_all("img") if i.get("src")]
+
+            extra = []
+            if len(paragraphs) > n:
+                extra.append(f"• {len(paragraphs) - n} extra paragraphs reh gaye hain.")
+            if headings:
+                extra.append(f"• {len(headings)} Headings mili hain (Unmapped).")
+            if images:
+                extra.append(f"• {len(images)} Images mili hain (Unmapped).")
+
+            if extra:
+                unmapped_box.content = ft.Column([
+                    ft.Text("⚠️ Yeh Extra Data Kisi Box Mein Mapped Nahi Hai:",
+                            weight=ft.FontWeight.BOLD, color=C.ORANGE_400),
+                    *[ft.Text(x, size=13) for x in extra],
+                    ft.Text("👉 Inhe bharne ke liye naya ACF box configure karein.",
+                            size=12, italic=True, color=C.GREY_400),
+                ])
+            else:
+                unmapped_box.content = ft.Column([
+                    ft.Text("✅ Pura data boxes mein successfully mapping ho gaya hai.",
+                            weight=ft.FontWeight.BOLD, color=C.GREEN_400),
+                ])
+
+            set_status("✅ Data fetch ho gaya! Check karke Publish dabayein.", C.GREEN_400)
+
+        except requests.exceptions.RequestException as ex:
+            set_status(f"❌ Network error: {ex}", C.RED_400)
+        except Exception as ex:
+            set_status(f"❌ Error: {ex}", C.RED_400)
+
+    def publish_post(e):
+        if not box_title.value.strip():
+            set_status("❌ Pehle title bharein / data fetch karein.", C.RED_400)
+            return
+        if "yourwebsite.com" in wp_url.value or "your_username" in wp_user.value:
+            set_status("❌ Pehle WordPress Settings bharein aur Save karein.", C.RED_400)
+            return
+
+        html_body = "".join(
+            f"<p>{escape(p.strip())}</p>"
+            for p in box_content.value.split("\n\n") if p.strip()
+        )
+
+        payload = {
+            "title": box_title.value.strip(),
+            "content": html_body,
+            "status": status_dd.value or "draft",
+            "acf": {
+                (acf_name_source.value.strip() or "source_url"): box_acf_source.value,
+                (acf_name_extra.value.strip() or "meta_info"): box_acf_extra.value,
+            },
+        }
+
+        try:
+            set_status("⏳ WordPress par bheja ja raha hai...", C.BLUE_400)
+            r = requests.post(
+                wp_url.value.strip(),
+                json=payload,
+                auth=(wp_user.value.strip(), wp_pass.value.strip()),
+                timeout=25,
+            )
+            if r.status_code in (200, 201):
+                link = r.json().get("link", "")
+                set_status(f"🎉 Post ban gayi ({payload['status']})! {link}", C.GREEN_400)
+            elif r.status_code in (401, 403):
+                set_status("❌ Login fail: Username / Application Password check karein.", C.RED_400)
+            else:
+                set_status(f"❌ WP Error {r.status_code}: {r.text[:200]}", C.RED_400)
+        except requests.exceptions.RequestException as ex:
+            set_status(f"❌ Network error: {ex}", C.RED_400)
+
+    def clear_all(e):
+        for f in (url_input, box_title, box_content, box_acf_source, box_acf_extra):
+            f.value = ""
+        unmapped_box.content = ft.Column([
+            ft.Text("⚠️ Unmapped / Extra Data Check", weight=ft.FontWeight.BOLD, color=C.ORANGE_400),
+            ft.Text("Abhi tak koi data read nahi hua hai.", color=C.GREY_400),
+        ])
+        set_status("", C.WHITE)
+
+    page.add(
+        ft.Text("🌸 Asha App", size=26, weight=ft.FontWeight.BOLD),
+        settings_panel,
+        url_input,
+        ft.Row([max_paras, status_dd], wrap=True),
+        ft.Row([
+            ft.ElevatedButton("🔍 Fetch Data", on_click=fetch_data),
+            ft.ElevatedButton("🚀 Publish to WP", on_click=publish_post,
+                              bgcolor=C.GREEN_700, color=C.WHITE),
+            ft.OutlinedButton("🧹 Clear", on_click=clear_all),
+        ], wrap=True),
+        status_text,
+        box_title, box_content, box_acf_source, box_acf_extra,
+        unmapped_box,
+    )
+
+
+if __name__ == "__main__":
+    try:
+        ft.app(target=main)
+    except Exception:
+        ft.run(main)
